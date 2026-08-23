@@ -106,7 +106,7 @@ Quote quotes[TICKER_COUNT + 1];  // 8 固定 + 1 临时查询
 String LAST_UPDATE = "--:--:--";
 
 // ===== 临时查询标的 =====
-String customCode = "";   // 如 "sh000001"
+String customCode = "";   // 如 "sh000001"（上证指数）
 bool  customValid = false;
 
 // ===== 日K线 =====
