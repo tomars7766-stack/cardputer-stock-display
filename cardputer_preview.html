@@ -16,7 +16,7 @@
 </head>
 <body>
 <h1>Cardputer 股票屏 · Mac 预览</h1>
-<div class="sub">240×135 屏幕放大 3 倍 · 数据来自实时接口 · 键盘按键即模拟 Cardputer 键盘</div>
+<div class="sub">240×135 屏幕放大 3 倍 · 数据源由用户自配 · 键盘按键即模拟 Cardputer 键盘</div>
 <canvas id="screen" width="240" height="135"></canvas>
 <div id="status">正在加载…</div>
 <div id="hint">
@@ -347,7 +347,7 @@ setInterval(()=>{ if(!inputMode){ ctx.fillStyle=C.BLACK; ctx.fillRect(0,126,W,H-
   await fetchQuotes();
   await fetchKline(0);
   render();
-  setStatus('已就绪 · 数据源=实时接口 · 按键盘按键模拟操作');
+  setStatus('已就绪 · 数据源由用户自配 · 按键盘按键模拟操作');
 })();
 </script>
 </body>
