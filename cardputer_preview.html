@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Cardputer 股票屏预览</title>
+<style>
+  body { background:#1a1a2e; color:#eee; font-family:system-ui,sans-serif; text-align:center; padding:20px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:#999; font-size:12px; margin-bottom:14px; }
+  canvas { image-rendering:pixelated; background:#000; border:2px solid #444; border-radius:6px;
+           width:720px; height:405px; }
+  #hint { margin-top:14px; font-size:13px; color:#bbb; line-height:1.7; }
+  kbd { background:#333; border:1px solid #555; border-radius:3px; padding:1px 6px; font-size:12px; color:#fff; }
+  #status { margin-top:8px; font-size:12px; color:#8f8; min-height:16px; }
+</style>
+</head>
+<body>
+<h1>Cardputer 股票屏 · Mac 预览</h1>
+<div class="sub">240×135 屏幕放大 3 倍 · 数据来自实时接口 · 键盘按键即模拟 Cardputer 键盘</div>
+<canvas id="screen" width="240" height="135"></canvas>
+<div id="status">正在加载…</div>
+<div id="hint">
+  <kbd>w</kbd>/<kbd>s</kbd> 切视图 &nbsp;
+  <kbd>a</kbd>/<kbd>d</kbd> 切标的 &nbsp;
+  <kbd>1</kbd>-<kbd>9</kbd> 跳标的 &nbsp;
+  <kbd>空格</kbd> 锁定轮播 &nbsp;
+  <kbd>-</kbd>/<kbd>=</kbd> 轮播间隔 &nbsp;
+  <kbd>e</kbd> 输入个股查询 &nbsp;
+  <kbd>x</kbd> 删除 &nbsp;
+  （输入查询时直接敲 6 位代码，如 000001）
+</div>
+
+<script>
+const W = 240, H = 135;
+const cv = document.getElementById('screen');
+const ctx = cv.getContext('2d');
+
+const C = {
+  BLACK:'#000', WHITE:'#fff', RED:'#f00', GREEN:'#0f0',
+  DARKGREY:'#555', LIGHTGREY:'#ccc', YELLOW:'#ff0', CYAN:'#0ff', MAGENTA:'#f0f'
+};
+
+const NAMES = ["SH Index","SZ Component","ChiNext","STAR 50","CSI 300","CSI 500","CSI 1000","SSE 50"];
+const CODES = ["sh000001","sz399001","sz399006","sh000688","sh000300","sh000905","sh000852","sh000016"];
+const IS_INDEX = [true,true,true,true,true,true,true,true];
+const TICKER_COUNT = 8;
+
+let quotes = Array.from({length:TICKER_COUNT+1}, ()=>({price:0,prevClose:0,open:0,high:0,low:0,pct:0,volume:0,amount:0,turnover:0,volRatio:0,amplitude:0,pe:0,mcap:0,buyPrice:[0,0,0,0,0],buyVol:[0,0,0,0,0],sellPrice:[0,0,0,0,0],sellVol:[0,0,0,0,0]}));
+let lastUpdate = '--:--:--';
+let customCode = '';
+let customValid = false;
+
+let kOpen=[],kClose=[],kHigh=[],kLow=[],kVol=[],kCount=0,kTicker=-1;
+let kZoomIdx=1; const kZoomLevels=[120,60,30,15]; let brightness=128;
+let mPrice=[],mAvg=[],mVol=[],mCount=0,mTicker=-1;
+
+let curView = 0;
+let curTicker = 0;
+let autoRotate = true;
+let rotateIdx = 1;
+const rotateIntervals = [3,5,8,12,20,30];
+
+let inputMode = false;
+let inputBuf = '';
+
+async function getJSON(url){ const r = await fetch(url); return r.json(); }
+function tickerCode(i){ return i===TICKER_COUNT ? customCode : CODES[i]; }
+function tickerName(i){ return i===TICKER_COUNT ? customCode : NAMES[i]; }
+function tickerIsIndex(i){ return i===TICKER_COUNT ? false : IS_INDEX[i]; }
+function addPrefix(c6){ const c=c6[0]; if(c==='6'||c==='9')return'sh'+c6; if(c==='0'||c==='3')return'sz'+c6; if(c==='8'||c==='4')return'bj'+c6; return'sh'+c6; }
+
+function parseQuote(idx, seg){
+  const f = seg.split('~');
+  const q = quotes[idx];
+  q.price=+f[3]; q.prevClose=+f[4]; q.open=+f[5]; q.volume=+f[6];
+  q.pct=+f[32]; q.high=+f[33]; q.low=+f[34]; q.amount=+f[37];
+  q.turnover=+f[38]; q.pe=+f[39]; q.amplitude=+f[43]; q.mcap=+f[45]; q.volRatio=+f[46];
+  for(let k=0;k<5;k++){ q.buyPrice[k]=+f[9+k*2]; q.buyVol[k]=+f[10+k*2]; q.sellPrice[k]=+f[19+k*2]; q.sellVol[k]=+f[20+k*2]; }
+  // 时间戳（字段30，格式 YYYYMMDDHHMMSS）
+  if(f.length>30 && f[30].length===14){ lastUpdate=f[30].substring(8,10)+':'+f[30].substring(10,12)+':'+f[30].substring(12,14); }
+}
+
+async function fetchQuotes(){
+  const j = await getJSON('/quote?codes='+CODES.join(','));
+  if(!j.ok) return;
+  const text = j.text;
+  for(let i=0;i<TICKER_COUNT;i++){
+    const key = 'v_'+CODES[i]+'=';
+    const s = text.indexOf(key);
+    if(s<0) continue;
+    const start = s+key.length+1;
+    const e = text.indexOf('"', start);
+    if(e<0) continue;
+    parseQuote(i, text.substring(start,e));
+  }
+}
+
+async function fetchOne(slot, code){
+  const j = await getJSON('/quote?codes='+code);
+  if(!j.ok) return false;
+  const key='v_'+code+'=';
+  const s=j.text.indexOf(key);
+  if(s<0) return false;
+  const start=s+key.length+1, e=j.text.indexOf('"',start);
+  if(e<0) return false;
+  parseQuote(slot, j.text.substring(start,e));
+  return true;
+}
+
+async function fetchKline(idx){
+  const code = tickerCode(idx);
+  const j = await getJSON('/kline?code=' + code);
+  if(!j.ok) return;
+  const obj = JSON.parse(j.raw);
+  const data = obj.data && obj.data[code];
+  const arr = (data && (data.qfqday||data.day)) || [];
+  kOpen=[];kClose=[];kHigh=[];kLow=[];kVol=[];
+  arr.forEach(v=>{ kOpen.push(+v[1]); kClose.push(+v[2]); kHigh.push(+v[3]); kLow.push(+v[4]); kVol.push(+v[5]); });
+  kCount=kOpen.length; kTicker=idx;
+}
+
+async function fetchMinute(idx){
+  const code = tickerCode(idx);
+  const j = await getJSON('/minute?code=' + code);
+  if(!j.ok) return;
+  const obj = JSON.parse(j.raw);
+  const arr = (obj.data && obj.data[code] && obj.data[code].data && obj.data[code].data.data) || [];
+  mPrice=[]; mAvg=[]; mVol=[];
+  let prevCum=0;
+  arr.forEach(s=>{ const p=s.split(' '); const price=+p[1]; const cumVol=+p[2]; const cumAmt=+p[3];
+    mPrice.push(price); mAvg.push(cumVol>0? cumAmt/(cumVol*100) : price);
+    mVol.push(cumVol-prevCum); prevCum=cumVol; });
+  mCount=mPrice.length; mTicker=idx;
+}
+
+// ===== 指标计算 =====
+function calcMACD(closes){
+  const dif=[],dea=[],macd=[];
+  let e12=closes[0], e26=closes[0], d=0;
+  for(let i=0;i<closes.length;i++){
+    e12=e12*11/13+closes[i]*2/13;
+    e26=e26*25/27+closes[i]*2/27;
+    const di=e12-e26; dif.push(di);
+    d=d*8/10+di*2/10; dea.push(d);
+    macd.push(2*(di-d));
+  }
+  return {dif,dea,macd};
+}
+function calcKDJ(highs,lows,closes){
+  const k=[],d=[],jj=[];
+  let kk=50, dd=50;
+  for(let i=0;i<closes.length;i++){
+    const n=Math.min(9,i+1);
+    let h=-Infinity,l=Infinity;
+    for(let t=i-n+1;t<=i;t++){ if(highs[t]>h)h=highs[t]; if(lows[t]<l)l=lows[t]; }
+    const rsv=(h===l)?50:(closes[i]-l)/(h-l)*100;
+    kk=kk*2/3+rsv/3; dd=dd*2/3+kk/3;
+    k.push(kk); d.push(dd); jj.push(3*kk-2*dd);
+  }
+  return {k,d,j:jj};
+}
+
+// ===== 绘图 =====
+function txt(s,x,y,size,color){ ctx.fillStyle=color; ctx.font=size+'px monospace'; ctx.fillText(s,x,y); }
+function fill(color){ ctx.fillStyle=color; ctx.fillRect(0,0,W,H); }
+
+function statusBar(){
+  const rot = autoRotate ? ('Auto '+rotateIntervals[rotateIdx]+'s') : 'Manual';
+  txt(rot,2,126,8,C.DARKGREY);
+  const now = new Date();
+  const t = String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0')+':'+String(now.getSeconds()).padStart(2,'0');
+  txt(t,138,126,8,C.DARKGREY);
+  txt('100%',200,126,8,C.DARKGREY);
+}
+
+
+function drawOrderPanel(x){
+  const q=quotes[curTicker];
+  if(tickerIsIndex(curTicker)){ txt('Index',x,50,8,C.YELLOW); return; }
+  let y=14;
+  for(let i=4;i>=0;i--){ txt(q.sellPrice[i].toFixed(2)+' '+Math.round(q.sellVol[i]),x,y,8,C.GREEN); y+=10; }
+  ctx.fillStyle=C.DARKGREY; ctx.fillRect(x-2,y,150,1); y+=2;
+  for(let i=0;i<5;i++){ txt(q.buyPrice[i].toFixed(2)+' '+Math.round(q.buyVol[i]),x,y,8,C.RED); y+=10; }
+}
+
+function drawQuote(){
+  fill(C.BLACK);
+  const q=quotes[curTicker], c=q.pct>=0?C.RED:C.GREEN;
+  txt(tickerName(curTicker),2,10,8,C.WHITE);
+  txt(tickerCode(curTicker),88,10,8,C.DARKGREY);
+  txt(q.price.toFixed(2),2,42,30,C.WHITE);
+  txt((q.pct>=0?'+':'')+q.pct.toFixed(2)+'%',2,60,13,c);
+  txt('O '+q.open.toFixed(2)+' H '+q.high.toFixed(2),2,76,8,C.LIGHTGREY);
+  txt('L '+q.low.toFixed(2)+' P '+q.prevClose.toFixed(2),2,88,8,C.LIGHTGREY);
+  txt('Amt '+(q.amount/10000).toFixed(1)+'亿',2,102,8,C.WHITE);
+  txt('Tr '+q.turnover.toFixed(2)+'% VR '+q.volRatio.toFixed(2),2,114,8,C.WHITE);
+  drawOrderPanel(150);
+  statusBar();
+}
+
+
+function drawMinute(){
+  fill(C.BLACK);
+  const q=quotes[curTicker];
+  txt(tickerName(curTicker),2,8,8,C.WHITE);
+  if(mCount===0 || mTicker!==curTicker){
+    txt(mTicker===curTicker?'Min fail':'Loading...',2,52,16,C.YELLOW);
+    if(mTicker===curTicker){ txt('tap a/d retry',2,72,8,C.DARKGREY); }
+    statusBar(); return;
+  }
+  const ref=q.prevClose;
+  let minP=ref,maxP=ref;
+  for(let i=0;i<mCount;i++){ if(mPrice[i]<minP)minP=mPrice[i]; if(mPrice[i]>maxP)maxP=mPrice[i]; if(mAvg[i]<minP)minP=mAvg[i]; if(mAvg[i]>maxP)maxP=mAvg[i]; }
+  let range=maxP-minP; if(range<=0.0001)range=0.01;
+  // 价格线区域
+  const cy=10,ch=70, stepX=W/mCount;
+  const yOf=v=>cy+(maxP-v)/range*ch;
+  const yRef=yOf(ref);
+  ctx.fillStyle=C.DARKGREY; ctx.fillRect(0,yRef,W,1);
+  function line(arr,color){ ctx.strokeStyle=color; ctx.lineWidth=1; ctx.beginPath(); for(let i=0;i<mCount;i++){ const x=i*stepX, y=yOf(arr[i]); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); } ctx.stroke(); }
+  line(mPrice,C.WHITE);
+  line(mAvg,C.YELLOW);
+  // 量柱区域
+  const maxV=Math.max(...mVol)||1;
+  const vy=84, vh=26;
+  for(let i=0;i<mCount;i++){
+    const h=mVol[i]/maxV*vh, x=i*stepX, up=mPrice[i]>=ref;
+    ctx.fillStyle=up?C.RED:C.GREEN; ctx.fillRect(x,vy+vh-h,stepX-0.5,h);
+  }
+  // 底部
+  txt(q.price.toFixed(2),2,118,8,C.WHITE);
+  txt((q.pct>=0?'+':'')+q.pct.toFixed(2)+'%',60,118,8,q.pct>=0?C.RED:C.GREEN);
+  statusBar();
+}
+
+function drawKline(){
+  fill(C.BLACK);
+  const q=quotes[curTicker];
+  txt(tickerName(curTicker),2,8,8,C.WHITE);
+  txt(q.price.toFixed(2),100,8,8,C.WHITE);
+  txt((q.pct>=0?'+':'')+q.pct.toFixed(1)+'%',160,8,8,q.pct>=0?C.RED:C.GREEN);
+  txt('Z'+kZoomLevels[kZoomIdx],205,8,8,C.DARKGREY);
+  if(kCount===0 || kTicker!==curTicker){
+    txt(kTicker===curTicker?'K data fail':'Loading...',2,52,16,C.YELLOW);
+    if(kTicker===curTicker){ txt('tap a/d retry',2,72,8,C.DARKGREY); }
+    statusBar(); return;
+  }
+  const show=Math.min(kZoomLevels[kZoomIdx],kCount);
+  const start=kCount-show;
+  const o=kOpen.slice(start), c=kClose.slice(start), h=kHigh.slice(start), l=kLow.slice(start);
+  let minP=Math.min(...l),maxP=Math.max(...h);
+  let range=maxP-minP; if(range<=0.0001)range=0.01;
+  const kw=240, cy=12, ch=48, cw1=kw/show;
+  for(let i=0;i<show;i++){
+    const cx=i*cw1+cw1/2;
+    const yH=cy+(maxP-h[i])/range*ch, yL=cy+(maxP-l[i])/range*ch;
+    const yO=cy+(maxP-o[i])/range*ch, yC=cy+(maxP-c[i])/range*ch;
+    const up=c[i]>=o[i], color=up?C.RED:C.GREEN;
+    ctx.strokeStyle=color; ctx.beginPath(); ctx.moveTo(cx,yH); ctx.lineTo(cx,yL); ctx.stroke();
+    ctx.fillStyle=color; ctx.fillRect(cx-cw1/2,Math.min(yO,yC),Math.max(1,cw1-1),Math.max(1,Math.abs(yC-yO)));
+  }
+  const macd=calcMACD(c);
+  let mdMin=Math.min(...macd.dif,...macd.dea,...macd.macd), mdMax=Math.max(...macd.dif,...macd.dea,...macd.macd);
+  if(mdMax-mdMin<=0.0001){mdMax=mdMin+0.01;}
+  const my=64, mh=18, mOf=v=>my+(mdMax-v)/(mdMax-mdMin)*mh;
+  const zero=mOf(0);
+  ctx.fillStyle=C.DARKGREY; ctx.fillRect(0,zero,kw,1);
+  for(let i=0;i<show;i++){ const x=i*cw1; ctx.fillStyle=macd.macd[i]>=0?C.RED:C.GREEN; ctx.fillRect(x,Math.min(zero,mOf(macd.macd[i])),Math.max(1,cw1-1),Math.max(1,Math.abs(mOf(macd.macd[i])-zero))); }
+  function mline(arr,color){ ctx.strokeStyle=color; ctx.beginPath(); for(let i=0;i<show;i++){ const x=i*cw1, y=mOf(arr[i]); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); } ctx.stroke(); }
+  mline(macd.dif,C.WHITE); mline(macd.dea,C.YELLOW);
+  const kdj=calcKDJ(h,l,c);
+  const ky=86, kh=14, kOf=v=>ky+(100-v)/100*kh;
+  function kline(arr,color){ ctx.strokeStyle=color; ctx.beginPath(); for(let i=0;i<show;i++){ const x=i*cw1, y=kOf(arr[i]); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); } ctx.stroke(); }
+  kline(kdj.k,C.WHITE); kline(kdj.d,C.YELLOW); kline(kdj.j,C.MAGENTA);
+  txt('MACD',4,my,8,C.DARKGREY);
+  txt('KDJ',4,ky,8,C.DARKGREY);
+  statusBar();
+}
+
+
+function render(){
+  switch(curView){
+    case 0: drawQuote(); break;
+    case 1: drawMinute(); break;
+    case 2: drawKline(); break;
+  }
+}
+
+function drawInputUI(){
+  fill(C.BLACK);
+  txt('Input stock code:',2,10,8,C.WHITE);
+  txt(inputBuf+'_',2,46,24,C.CYAN);
+  txt('6 digits, auto search',2,100,8,C.DARKGREY);
+  txt('x=erase  e=exit',2,114,8,C.DARKGREY);
+}
+
+async function ensureViewData(){
+  if(curView===2 && (kCount===0||kTicker!==curTicker)) await fetchKline(curTicker);
+  if(curView===1 && (mCount===0||mTicker!==curTicker)) await fetchMinute(curTicker);
+}
+
+async function queryCustom(c6){
+  const code=addPrefix(c6);
+  const ok=await fetchOne(TICKER_COUNT, code);
+  if(ok){ customCode=code; customValid=true; curTicker=TICKER_COUNT; inputMode=false; await ensureViewData(); render(); }
+  else { fill(C.BLACK); txt('Not found:',2,42,16,C.RED); txt(code,2,72,16,C.WHITE); setStatus('查无此代码: '+code); await sleep(1200); inputBuf=''; drawInputUI(); }
+}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function setStatus(s){ document.getElementById('status').textContent=s; }
+
+document.addEventListener('keydown', async e=>{
+  const k=e.key;
+  if(inputMode){
+    if(/^[0-9]$/.test(k)){ if(inputBuf.length<6){ inputBuf+=k; if(inputBuf.length===6){ await queryCustom(inputBuf); return; } drawInputUI(); } }
+    else if(k==='x'||k==='X'||k==='Backspace'){ inputBuf=inputBuf.slice(0,-1); drawInputUI(); }
+    else if(k==='e'||k==='E'||k==='Escape'){ inputMode=false; render(); }
+    return;
+  }
+  if(k==='e'||k==='E'){ inputMode=true; inputBuf=''; drawInputUI(); return; }
+  if(k==='w'||k==='W'){ curView=(curView+2)%3; await ensureViewData(); render(); }
+  else if(k==='s'||k==='S'){ curView=(curView+1)%3; await ensureViewData(); render(); }
+  else if(k==='a'||k==='A'){ curTicker=(curTicker+TICKER_COUNT)%(TICKER_COUNT+1); if(curTicker===TICKER_COUNT&&!customValid)curTicker=TICKER_COUNT-1; lastRotate=Date.now(); await ensureViewData(); render(); }
+  else if(k==='d'||k==='D'){ curTicker=(curTicker+1)%(TICKER_COUNT+1); if(curTicker===TICKER_COUNT&&!customValid)curTicker=0; lastRotate=Date.now(); await ensureViewData(); render(); }
+  else if(/^[1-9]$/.test(k)){ curTicker=+k-1; lastRotate=Date.now(); await ensureViewData(); render(); }
+  else if(k===' '){ autoRotate=!autoRotate; lastRotate=Date.now(); render(); e.preventDefault(); }
+  else if(k==='-'){ rotateIdx=(rotateIdx+5)%6; lastRotate=Date.now(); render(); }
+  else if(k==='='||k==='+'){ rotateIdx=(rotateIdx+1)%6; lastRotate=Date.now(); render(); }
+  else if(k==='['){ kZoomIdx=(kZoomIdx+3)%4; render(); }
+  else if(k===']'){ kZoomIdx=(kZoomIdx+1)%4; render(); }
+  else if(k===','){ brightness=Math.max(20,brightness-24); document.getElementById('screen').style.filter='brightness('+(brightness/255)+')'; }
+  else if(k==='.'){ brightness=Math.min(255,brightness+24); document.getElementById('screen').style.filter='brightness('+(brightness/255)+')'; }
+});
+
+let lastRotate=Date.now(), lastFetch=Date.now(), lastChart=Date.now();
+setInterval(async ()=>{
+  if(inputMode) return;
+  const now=Date.now();
+  if(now-lastFetch>=1000){ await fetchQuotes(); if(customValid) await fetchOne(TICKER_COUNT,customCode); lastFetch=now; render(); }
+  if(now-lastChart>=1000){ if(curView===1) await fetchMinute(curTicker); lastChart=now; render(); }
+  if(autoRotate && now-lastRotate>=rotateIntervals[rotateIdx]*1000){ curTicker=(curTicker+1)%(TICKER_COUNT+1); if(curTicker===TICKER_COUNT&&!customValid)curTicker=0; lastRotate=now; await ensureViewData(); render(); }
+}, 500);
+
+setInterval(()=>{ if(!inputMode){ ctx.fillStyle=C.BLACK; ctx.fillRect(0,126,W,H-126); statusBar(); } }, 1000);
+
+(async ()=>{
+  setStatus('加载行情数据…');
+  await fetchQuotes();
+  await fetchKline(0);
+  render();
+  setStatus('已就绪 · 数据源=实时接口 · 按键盘按键模拟操作');
+})();
+</script>
+</body>
+</html>
